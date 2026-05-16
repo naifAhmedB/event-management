@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { QrCode, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { QrCode, CheckCircle, XCircle, AlertCircle, FlipHorizontal } from 'lucide-react';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { eventService } from '../../services/eventService';
 import { Event, ScanResult } from '../../types';
 import { Button } from '../../components/ui/Button';
-import { cn } from '../../lib/utils';
+
+interface CameraDevice {
+  id: string;
+  label: string;
+}
 
 const ScannerPage = () => {
   const { t } = useLanguage();
@@ -17,6 +21,9 @@ const ScannerPage = () => {
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [loadingEvents, setLoadingEvents] = useState(true);
+  const [cameras, setCameras] = useState<CameraDevice[]>([]);
+  const [activeCameraIndex, setActiveCameraIndex] = useState(0);
+
   const scannerRef = useRef<unknown>(null);
 
   useEffect(() => {
@@ -26,9 +33,7 @@ const ScannerPage = () => {
         if (res.success && res.data) {
           const active = (Array.isArray(res.data) ? res.data : []).filter(e => e.status === 'active');
           setEvents(active);
-          if (!preselectedEventId && active.length > 0) {
-            setSelectedEventId(active[0].id);
-          }
+          if (!preselectedEventId && active.length > 0) setSelectedEventId(active[0].id);
         }
       } catch {
         // ignore
@@ -39,48 +44,79 @@ const ScannerPage = () => {
     load();
   }, []);
 
-  const startScanning = async () => {
-    if (!selectedEventId) return;
-    setScanning(true);
-    setScanResult(null);
+  const stopScanner = async () => {
+    const s = scannerRef.current as { stop: () => Promise<void> } | null;
+    if (s) {
+      try { await s.stop(); } catch { /* ignore */ }
+      scannerRef.current = null;
+    }
+  };
 
-    try {
-      const { Html5QrcodeScanner } = await import('html5-qrcode');
-      const scanner = new Html5QrcodeScanner(
-        'qr-reader',
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        false
-      );
+  const startScanner = async (cameraId: string) => {
+    const { Html5Qrcode } = await import('html5-qrcode');
+    const qr = new Html5Qrcode('qr-reader');
+    scannerRef.current = qr;
 
-      const onSuccess = async (decodedText: string) => {
-        scanner.clear();
+    await qr.start(
+      cameraId,
+      { fps: 10, qrbox: { width: 240, height: 240 } },
+      async (decodedText) => {
+        await stopScanner();
         setScanning(false);
 
-        // Extract invite token from URL
         const token = decodedText.includes('/invite/')
           ? decodedText.split('/invite/').pop() || decodedText
           : decodedText;
 
         try {
           const res = await eventService.scanQr(selectedEventId, token);
-          if (res.success && res.data) {
-            setScanResult(res.data);
-          } else {
-            setScanResult({ valid: false, message: t('scanner.invalid') });
-          }
+          setScanResult(res.success && res.data ? res.data : { valid: false, message: t('scanner.invalid') });
         } catch {
           setScanResult({ valid: false, message: t('common.error') });
         }
-      };
+      },
+      () => { /* ignore per-frame errors */ }
+    );
+  };
 
-      const onError = () => { /* ignore individual frame errors */ };
+  const startScanning = async () => {
+    if (!selectedEventId) return;
+    setScanning(true);
+    setScanResult(null);
 
-      scanner.render(onSuccess, onError);
-      scannerRef.current = scanner;
+    try {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      const devices: CameraDevice[] = await Html5Qrcode.getCameras();
+
+      if (!devices.length) {
+        setScanResult({ valid: false, message: 'No camera found' });
+        setScanning(false);
+        return;
+      }
+
+      // Prefer back camera: look for "environment" / "back" in label
+      const backIndex = devices.findIndex(d =>
+        /back|rear|environment/i.test(d.label)
+      );
+      const startIndex = backIndex >= 0 ? backIndex : 0;
+
+      setCameras(devices);
+      setActiveCameraIndex(startIndex);
+
+      // Give React a tick to render the #qr-reader div before starting
+      setTimeout(() => startScanner(devices[startIndex].id), 100);
     } catch {
       setScanning(false);
       setScanResult({ valid: false, message: t('common.error') });
     }
+  };
+
+  const flipCamera = async () => {
+    if (cameras.length < 2) return;
+    await stopScanner();
+    const next = (activeCameraIndex + 1) % cameras.length;
+    setActiveCameraIndex(next);
+    setTimeout(() => startScanner(cameras[next].id), 100);
   };
 
   const resetScan = () => {
@@ -141,10 +177,19 @@ const ScannerPage = () => {
         </div>
       )}
 
-      {/* QR reader container */}
+      {/* QR reader + flip button */}
       {scanning && !scanResult && (
-        <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+        <div className="relative bg-white rounded-2xl border border-gray-200 overflow-hidden">
           <div id="qr-reader" className="w-full" />
+          {cameras.length > 1 && (
+            <button
+              onClick={flipCamera}
+              className="absolute bottom-3 right-3 z-10 bg-black/60 hover:bg-black/80 text-white rounded-full p-2.5 transition-colors"
+              title="Switch camera"
+            >
+              <FlipHorizontal size={20} />
+            </button>
+          )}
         </div>
       )}
 
@@ -172,10 +217,11 @@ const ScannerPage = () => {
         </Button>
       )}
 
-      {/* Note about HTTPS */}
-      <p className="text-xs text-gray-400 text-center">
-        {navigator.mediaDevices ? '' : '⚠️ Camera access requires HTTPS. Use https:// URL.'}
-      </p>
+      {!navigator.mediaDevices && (
+        <p className="text-xs text-gray-400 text-center">
+          ⚠️ Camera access requires HTTPS.
+        </p>
+      )}
     </div>
   );
 };
