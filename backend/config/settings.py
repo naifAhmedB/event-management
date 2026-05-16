@@ -117,7 +117,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # Production security
 CSRF_TRUSTED_ORIGINS = os.environ.get(
-    'CSRF_TRUSTED_ORIGINS', 'http://localhost:5173'
+    'CSRF_TRUSTED_ORIGINS',
+    'http://localhost:5173,https://event-management-jet-kappa.vercel.app'
 ).split(',')
 
 # Allow Render's internal health check host
@@ -150,7 +151,8 @@ SIMPLE_JWT = {
 
 # CORS
 CORS_ALLOWED_ORIGINS = os.environ.get(
-    'CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:3000'
+    'CORS_ALLOWED_ORIGINS',
+    'http://localhost:5173,http://localhost:3000,https://event-management-jet-kappa.vercel.app'
 ).split(',')
 CORS_ALLOW_CREDENTIALS = True
 
